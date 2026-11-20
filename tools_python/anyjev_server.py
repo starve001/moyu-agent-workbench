@@ -117,13 +117,31 @@ class Handler(BaseHTTPRequestHandler):
             self._send(500, {"error": "%s: %s" % (type(e).__name__, e)})
 
 
+class ExclusiveHTTPServer(ThreadingHTTPServer):
+    """Windows 下 SO_REUSEADDR 语义宽松，允许双绑定出"僵尸服务抢答"（实测踩坑 2026-11-21）。
+    改为独占端口：第二个实例启动即报错退出，而不是静默共存。"""
+
+    allow_reuse_address = False
+
+    def server_bind(self):
+        import socket as _s
+        if hasattr(_s, "SO_EXCLUSIVEADDRUSE"):
+            self.socket.setsockopt(_s.SOL_SOCKET, _s.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=11436)
     ap.add_argument("--host", default="127.0.0.1")
     args = ap.parse_args()
-    print("AnyJev 决策服务 http://%s:%d （模型 %s，首次运行会下载）" % (args.host, args.port, MODEL))
-    ThreadingHTTPServer((args.host, args.port), Handler).serve_forever()
+    try:
+        srv = ExclusiveHTTPServer((args.host, args.port), Handler)
+    except OSError as e:
+        print("端口 %d 已被占用（%s）。若有旧实例请先结束它，避免双服务抢答。" % (args.port, e))
+        raise SystemExit(1)
+    print("AnyJev 决策服务 http://%s:%d （模型 %s，首次运行会下载）" % (args.host, args.port, MODEL_DIR or MODEL))
+    srv.serve_forever()
 
 
 if __name__ == "__main__":

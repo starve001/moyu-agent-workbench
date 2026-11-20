@@ -22,7 +22,7 @@ import argparse
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-MODEL = "Qwen/Qwen3-8B"  # 与 config/decider.json 保持一致；8B 为能力余量，非引用作者 1.7B 的分数
+MODEL = "Qwen/Qwen3-1.7B"  # 与 config/decider.json 保持一致；1.7B 为作者实测分数对应档，8GB 显存可整载（实测 AnyJev 0.3.0 API）
 
 _decider = None
 _level = "unavailable"
@@ -40,7 +40,9 @@ def load_decider():
         raise RuntimeError(
             "AnyJev 未安装。请先运行: pip install -r requirements.lock（原始错误: %s）" % e
         )
-    _decider = Decider(HFBackend(MODEL))
+    import torch
+    device = "cuda" if torch.cuda.is_available() else "cpu"  # 实测：CPU 版 torch 装了 cuda 也不可用
+    _decider = Decider(HFBackend(MODEL, device=device))
 
     # 两个有界问题：风险 yes/no（noul）+ 意图路由（choice）
     _questions = [
@@ -82,7 +84,7 @@ class Handler(BaseHTTPRequestHandler):
             state = str(payload.get("state", ""))
 
             decider = load_decider()
-            result = decider.decide({"message": state}, decider._questions)
+            result = decider.decide(state, decider._questions)  # 实测 0.3.0：state 为字符串
 
             p_risk = float(result["risk"].p_true)          # 高危概率
             intent_res = result["intent"].distribution     # dict[str, float]

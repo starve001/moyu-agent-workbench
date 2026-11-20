@@ -3,5 +3,5 @@
   "backend": "mock",
   "endpoint": "http://127.0.0.1:11436",
   "timeoutMs": 4000,
-  "model": "Qwen/Qwen3-8B"
+  "model": "Qwen/Qwen3-1.7B"
 }

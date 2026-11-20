@@ -20,9 +20,12 @@ AnyJev 本地决策服务（P0 · 设计文档 §8.3）。
 """
 import argparse
 import json
+import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 MODEL = "Qwen/Qwen3-1.7B"  # 与 config/decider.json 保持一致；1.7B 为作者实测分数对应档，8GB 显存可整载（实测 AnyJev 0.3.0 API）
+# 本地目录覆盖（绕过 HF 下载限流，如用 ModelScope 下载后直连）：环境变量 MOYU_ANYJEV_MODEL_DIR 优先
+MODEL_DIR = os.environ.get("MOYU_ANYJEV_MODEL_DIR", "")
 
 _decider = None
 _level = "unavailable"
@@ -42,7 +45,7 @@ def load_decider():
         )
     import torch
     device = "cuda" if torch.cuda.is_available() else "cpu"  # 实测：CPU 版 torch 装了 cuda 也不可用
-    _decider = Decider(HFBackend(MODEL, device=device))
+    _decider = Decider(HFBackend(MODEL_DIR or MODEL, device=device))
 
     # 两个有界问题：风险 yes/no（noul）+ 意图路由（choice）
     _questions = [
@@ -80,7 +83,13 @@ class Handler(BaseHTTPRequestHandler):
             if length > 1_000_000:
                 self._send(413, {"error": "body too large"})
                 return
-            payload = json.loads(self.rfile.read(length) or b"{}")
+            raw = self.rfile.read(length or 0)
+            try:
+                payload = json.loads(raw.decode("utf-8") or "{}")
+            except UnicodeDecodeError:
+                # Windows 下 curl -d '中文' 常按本地代码页(GBK)发送，客户端须用 UTF-8 文件方式传
+                self._send(400, {"error": "request body is not valid UTF-8（请检查客户端编码，Windows 建议写入 UTF-8 文件后 --data-binary @file）"})
+                return
             state = str(payload.get("state", ""))
 
             decider = load_decider()
@@ -98,7 +107,8 @@ class Handler(BaseHTTPRequestHandler):
                 "danger": danger,
                 "should_reply_now": p_risk < 0.5,
                 "best_action": best,
-                "confidence": round(1 - abs(p_risk - 0.5) * 2, 3),
+                # 置信度 = 距离"拿不准"(0.5) 的程度：p_risk 明确趋 0（安全）或趋 1（危险）都应接近 1
+                "confidence": round(abs(p_risk - 0.5) * 2, 3),
             }
             self._send(200, {"decision": decision, "level": _level, "risk_p": p_risk})
         except RuntimeError as e:

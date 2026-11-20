@@ -104,7 +104,7 @@ node server.js
 
 ## P0：真实决策内核 + 两道询问门禁
 
-落地设计见 `designs/摸鱼Agent-四版块落地-harness-design-v2.md`。P0 已完成：
+落地设计见 `../designs/摸鱼Agent-四版块落地-harness-design-v2.md`。P0 已完成：
 
 - **可插拔决策器**（`lib/decider.js`）：`GET /api/decider` 查看当前后端。默认 `mock`（离线闭环，保证回归）；三种后端 `mock` / `llm` / `anyjev`，由 `config/decider.json` 或环境变量 `MOYU_DECIDER_BACKEND` 配置。**前端不能改后端**（安全判断不受客户端影响）。
 - **AnyJev 本地决策服务**（可选）：`tools_python/anyjev_server.py`，需 Python 3.10+。启用步骤：
@@ -112,16 +112,18 @@ node server.js
   cd tools_python
   python -m venv .venv && source .venv/bin/activate   # Windows: .venv/Scripts/activate
   pip install -r requirements.lock
-  python anyjev_server.py --port 11436                # 首次运行会下载 Qwen3-8B
+  pip install hf_xet          # 可选：并行分块下载，实测比纯 HTTP 快一个量级
+  python anyjev_server.py --port 11436                # 首次运行会下载 Qwen3-1.7B（约 3.4GB）
   # 另开终端：MOYU_DECIDER_BACKEND=anyjev node ../server.js
   ```
-  服务不可用时**失败转人工、绝不静默降级为 mock**（mock 高危判断靠关键词会漏判）。模型 id `Qwen/Qwen3-8B` 为能力余量选择，作者自报的 0.730 分数属 1.7B、本项目不引用其背书。
+  服务不可用时**失败转人工、绝不静默降级为 mock**（mock 高危判断靠关键词会漏判）。模型档 `Qwen/Qwen3-1.7B`：8GB 显存可整载（bfloat16 约 3.4GB），且为作者自报 0.730 分数的实测配置档；服务端已做 device 探测，无 CUDA 时回退 CPU（较慢）。
+  **实测经验（2026-11-21）**：PyPI `anyjev==0.3.0` 的真实 API 与早前文档有出入（`Question.noul` 存在、`Decider.decide` 的 state 为字符串、`HFBackend` 默认 `device='cuda'`），服务端已按实测适配。国内网络直连 huggingface.co 大文件会被限流（实测 ~130KB/s，装 hf_xet 后 ~1.7MB/s）；`hf-mirror.com` 当前对 HEAD 请求 308 重定向导致 hf_hub 文件定位失败，勿用。Windows 下用 curl 测试须写 UTF-8 文件后 `--data-binary @file`，`-d '中文'` 会按本地代码页（GBK）发出导致解码 400。
 - **U2 两道询问门禁**：生成前询问（前端发送按钮两段式确认："发送"→"确认生成？"，4 秒超时复位）+ 完成后询问（fill-only，回复只填入输入框、用户手动决定发送）。`lib/agent.js` 提供 `askHooks.beforeGenerate` / `afterGenerate` 服务端钩子，未采用则草稿作废、禁止填入，全程写 trace。
 - P0 阶段测试 10 项（全项目最终 **121 项**全绿；测试用独立 runs 目录隔离，不污染真实数据）。
 
 ## P1：刷课执行台（OCS 能力底座）
 
-落地设计同见 `designs/摸鱼Agent-四版块落地-harness-design-v2.md`。P1 已完成（**离线闭环**）：
+落地设计同见 `../designs/摸鱼Agent-四版块落地-harness-design-v2.md`。P1 已完成（**离线闭环**）：
 
 - **能力底座**：OCS 助手（ocsjs/ocsjs, MIT）支持的 5 个平台（超星学习通/智慧树/职教云/智慧职教/中国大学MOOC）。本工作台**不 vendored OCS 源码**，只定义适配契约。
 - **进度机**（`lib/course.js`）：创建会话 → 推进章节 → 断点暂停/恢复 → 验证码转人工（`awaiting_human` → 人工处理 → `resume`）。前端"刷课"版块内有执行台卡片。

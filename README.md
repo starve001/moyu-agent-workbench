@@ -117,7 +117,14 @@ node server.js
   # 另开终端：MOYU_DECIDER_BACKEND=anyjev node ../server.js
   ```
   服务不可用时**失败转人工、绝不静默降级为 mock**（mock 高危判断靠关键词会漏判）。模型档 `Qwen/Qwen3-1.7B`：8GB 显存可整载（bfloat16 约 3.4GB），且为作者自报 0.730 分数的实测配置档；服务端已做 device 探测，无 CUDA 时回退 CPU（较慢）。
-  **实测经验（2026-11-21）**：PyPI `anyjev==0.3.0` 的真实 API 与早前文档有出入（`Question.noul` 存在、`Decider.decide` 的 state 为字符串、`HFBackend` 默认 `device='cuda'`），服务端已按实测适配。国内网络直连 huggingface.co 大文件会被限流（实测 ~130KB/s，装 hf_xet 后 ~1.7MB/s）；`hf-mirror.com` 当前对 HEAD 请求 308 重定向导致 hf_hub 文件定位失败，勿用。Windows 下用 curl 测试须写 UTF-8 文件后 `--data-binary @file`，`-d '中文'` 会按本地代码页（GBK）发出导致解码 400。
+  **实测经验（2026-11-21）**：PyPI `anyjev==0.3.0` 的真实 API 与早前文档有出入（`Question.noul` 存在、`Decider.decide` 的 state 为字符串、`HFBackend` 默认 `device='cuda'`），服务端已按实测适配。国内网络直连 huggingface.co 大文件会被限流断流（实测 ~130KB/s 且反复 SSL EOF）；`hf-mirror.com` 当前对 HEAD 请求 308 重定向导致 hf_hub 文件定位失败，勿用；**ModelScope 官方 SDK 是国内最快下载路线**（实测 5-8MB/s，Qwen 官方源）：
+  ```bash
+  pip install modelscope hf_xet
+  modelscope download --model Qwen/Qwen3-1.7B --local_dir D:/models/qwen3-1.7b
+  # 然后本地目录直连启动（绕过 HF）：
+  MOYU_ANYJEV_MODEL_DIR=D:/models/qwen3-1.7b python anyjev_server.py --port 11436
+  ```
+  **CPU 推理不可用级别**：CPU 版 torch 下一次决策 30-90 秒（实测），有 NVIDIA GPU 请装 CUDA 轮子（`pip install torch==2.14.1+cu126 --index-url https://download.pytorch.org/whl/cu126`），服务端自动探测走显存。Windows 下用 curl 测试须写 UTF-8 文件后 `--data-binary @file`，`-d '中文'` 会按本地代码页（GBK）发出导致解码 400。
 - **U2 两道询问门禁**：生成前询问（前端发送按钮两段式确认："发送"→"确认生成？"，4 秒超时复位）+ 完成后询问（fill-only，回复只填入输入框、用户手动决定发送）。`lib/agent.js` 提供 `askHooks.beforeGenerate` / `afterGenerate` 服务端钩子，未采用则草稿作废、禁止填入，全程写 trace。
 - P0 阶段测试 10 项（全项目最终 **121 项**全绿；测试用独立 runs 目录隔离，不污染真实数据）。
 

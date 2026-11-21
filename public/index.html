@@ -12,7 +12,8 @@
 <body>
 <div class="app">
   <!-- 左侧：五个平级入口（课程表 + 四版块） + 会话列表 + 次要工具 -->
-  <aside class="sidebar">
+  <!-- 窄屏（≤760px）时由 CSS 转为覆盖式抽屉，桌面布局不变 -->
+  <aside class="sidebar" id="sidebar">
     <div class="brand">
       <div class="brand-mark">M</div>
       <div class="brand-text">
@@ -43,6 +44,11 @@
 
   <!-- 中间舞台：按版块切换主视图 -->
   <div class="stage">
+    <!-- 窄屏工具栏（仅 ≤760px 显示，CSS 控制）：菜单开合抽屉 + 当前版块名 -->
+    <div class="mobile-bar" id="mobile-bar">
+      <button class="mobile-menu" id="mobile-menu" aria-expanded="false" aria-controls="sidebar" aria-label="打开导航菜单">☰ 菜单</button>
+      <span class="mobile-section" id="mobile-section">回复建议</span>
+    </div>
     <!-- 视图 A：回复建议（保留原有对话式界面） -->
     <main class="chat" id="chat-view">
       <header class="chat-head">
@@ -105,6 +111,9 @@
     </div>
     <div class="drawer-body" id="drawer-body"></div>
   </aside>
+
+  <!-- 窄屏抽屉遮罩：置于 .app 内（同堆叠上下文，z 55 < 抽屉 60），点击关闭；显隐由 CSS 控制 -->
+  <div class="nav-mask" id="nav-mask" aria-hidden="true"></div>
 </div>
 <script src="/app.js"></script>
 </body>

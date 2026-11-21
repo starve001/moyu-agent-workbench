@@ -1,0 +1,6 @@
+# 刷课 bridge 依赖（阶段2）——与 anyjev 主 requirements.lock 分开，避免污染决策内核环境
+# 安装：pip install -r requirements-bridge.txt
+# 浏览器：默认 channel="chrome" 直接用本机已装 Chrome，无需 playwright install chromium
+# （2026-11-21 实测：微软 CDN 不通、npmmirror 未同步新版本 → 免下载是唯一顺畅路线）
+# U6 惯例：首次安装后把实测版本号回填为精确 pin（2026-11-21 实测 1.65.2）
+playwright>=1.40,<2

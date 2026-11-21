@@ -12,6 +12,8 @@ const state = {
   planBusy: false,
   ttWeek: null,
   ttEditing: null,
+  // 「给任务找时间」面板的页面内状态：只活在前端内存，不上传、不写入课表或会话，刷新即失
+  ttFind: { name: '', periods: '2', results: null, resultsWeek: null, matched: 0 },
 };
 
 /**
@@ -62,6 +64,51 @@ function getSectionById(id) {
   return state.detailCache[id] || NAV_SECTIONS.find((x) => x.id === id) || {};
 }
 
+// ---------- 窄屏导航抽屉（≤760px，CSS 控制显示）：桌面无影响 ----------
+// 焦点管理：打开 → 焦点移入侧栏首个可见交互项，Tab/Shift+Tab 在侧栏可见交互项内循环；
+// 关闭（菜单按钮 / 遮罩 / Escape / 选择版块）→ 焦点统一恢复到菜单按钮。
+const FOCUSABLE_SEL = 'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), summary, [tabindex]:not([tabindex="-1"])';
+function visibleFocusables(root) {
+  return $$(FOCUSABLE_SEL, root).filter((n) => n.offsetParent !== null || n.getClientRects().length);
+}
+
+function setMobileNav(open) {
+  document.body.classList.toggle('nav-open', !!open);
+  const btn = $('#mobile-menu');
+  if (btn) {
+    btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    btn.setAttribute('aria-label', open ? '关闭导航菜单' : '打开导航菜单');
+  }
+  if (open) {
+    const sidebar = $('#sidebar');
+    if (sidebar) {
+      // 打开后把焦点移入侧栏。不同输入上下文（真实点击流/自动化/样式时机）里
+      // focus() 可生效的时机不同：rAF + 两次退避重试兜底，焦点一旦落进侧栏即不再移动；
+      // 抽屉已关闭则放弃，避免把焦点抢回侧栏。
+      const pullFocus = () => {
+        if (!document.body.classList.contains('nav-open')) return;
+        if (sidebar.contains(document.activeElement)) return;
+        const first = visibleFocusables(sidebar)[0];
+        if (first) first.focus();
+      };
+      requestAnimationFrame(pullFocus);
+      setTimeout(pullFocus, 60);
+      setTimeout(pullFocus, 250);
+    }
+  }
+}
+function closeMobileNav() {
+  const wasOpen = document.body.classList.contains('nav-open');
+  setMobileNav(false);
+  const btn = $('#mobile-menu');
+  if (wasOpen && btn && btn.offsetParent !== null) btn.focus(); // 恢复焦点（桌面隐藏态下静默跳过）
+}
+/** 顶部工具栏的当前版块名（窄屏可见） */
+function updateMobileSection() {
+  const lbl = $('#mobile-section');
+  if (lbl) lbl.textContent = getSectionById(state.activeSection).name || '';
+}
+
 async function getSectionDetail(id) {
   if (state.detailCache[id]) return state.detailCache[id];
   const detail = await get('/api/sections/' + encodeURIComponent(id));
@@ -81,6 +128,8 @@ async function switchSection(id) {
   state.activeSection = id;
   if (sectionFromHash() !== id) history.replaceState(null, '', '#' + id);
   renderNav();
+  closeMobileNav(); // 窄屏：选完版块立即收起抽屉（桌面无此元素行为）
+  updateMobileSection();
 
   const isWorkbench = WORKBENCH_IDS.includes(id);
   const isTimetable = id === 'timetable';
@@ -114,15 +163,18 @@ function courseRunnerHtml() {
           <input id="course-total" class="head-input" type="number" min="1" max="10000" value="10" title="章节总数（演示用）" style="width:88px" aria-label="章节总数" />
           <button class="btn" id="course-create">创建会话</button>
         </div>
+        <div class="tt-divider"></div>
+        <div class="tt-subhead">最近会话 <span class="badge">点击「打开」继续</span></div>
+        <div id="course-sessions" class="course-sessions" aria-label="最近刷课会话列表"><div class="muted small">加载会话列表…</div></div>
         <div id="course-panel" style="display:none">
           <div style="display:flex;justify-content:space-between;align-items:center;margin:10px 0 6px;gap:12px">
-            <span class="muted small" id="course-status">—</span>
+            <span class="muted small" id="course-status" role="status" aria-live="polite">—</span>
             <span class="badge" id="course-progress-text">0 / 0</span>
           </div>
-          <div class="course-bar"><div class="course-bar-fill" id="course-bar-fill"></div></div>
+          <div class="course-bar" id="course-bar" role="progressbar" aria-label="刷课进度" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0"><div class="course-bar-fill" id="course-bar-fill"></div></div>
           <div class="plan-controls" style="margin-top:12px;flex-wrap:wrap">
             <button class="btn ghost" id="course-tick">推进一章</button>
-            <button class="btn ghost" id="course-pause">暂停 / 恢复</button>
+            <button class="btn ghost" id="course-pause">暂停</button>
             <button class="btn ghost" id="course-resume" style="display:none">人工已处理 · 继续</button>
             <button class="btn ghost" id="course-eval">独立核验</button>
           </div>
@@ -270,60 +322,195 @@ function bindHomeworkRunner() {
 }
 
 /** 绑定刷课执行台事件 */
+const COURSE_STATUS_TEXT = { running: '播放中', paused: '已暂停', done: '已完成', awaiting_human: '验证码待人工处理' };
+const COURSE_STATUS_CLS = { running: 'ok', paused: 'warn', done: '', awaiting_human: 'err' };
+function courseFmtTime(iso) {
+  const d = iso ? new Date(iso) : null;
+  if (!d || isNaN(d)) return '—';
+  return `${d.getMonth() + 1}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
 function bindCourseRunner() {
   const runner = $('#course-runner');
   if (!runner || state.courseBound) return;
   state.courseBound = true;
-  let sid = null;
-  const setResult = (html) => { const r = $('#course-result'); if (r) r.innerHTML = html; };
-  const render = (s) => {
-    if (!s) return;
-    sid = s.sessionId;
-    $('#course-panel').style.display = '';
-    $('#course-mode').textContent = s.simulated ? '离线模拟' : '真实 bridge';
-    $('#course-status').textContent = ({ running: '播放中', paused: '已暂停', done: '已完成', awaiting_human: '待人工处理验证码' })[s.status] || s.status;
-    const p = s.progress || { current: 0, total: 0 };
-    $('#course-progress-text').textContent = `${p.current} / ${p.total}`;
-    $('#course-bar-fill').style.width = (p.total ? Math.round(p.current / p.total * 100) : 0) + '%';
-    $('#course-resume').style.display = s.status === 'awaiting_human' ? '' : 'none';
+  state.course = state.course || { sid: null };
+  // 切版块竞态防护：每次绑定一个代号；异步回写前检查 alive()（仍是当前实例且面板仍挂载），
+  // 旧闭包不得写新面板的 DOM、不得恢复新面板按钮、不得覆盖新实例的会话状态。
+  state.courseGen = (state.courseGen || 0) + 1;
+  const gen = state.courseGen;
+  const alive = () => gen === state.courseGen && runner.isConnected;
+  let busy = false;   // 本实例的请求门禁（闭包私有，实例间互不影响）
+  let sessionCache = [];
+  let lastSession = null;
+  const q = (sel) => runner.querySelector(sel);
+  const setResult = (html) => {
+    if (!alive()) return;
+    const r = q('#course-result');
+    if (r) r.innerHTML = html;
   };
-  get('/api/course/meta').then((m) => {
-    const hint = $('#course-hint');
-    if (hint) hint.textContent = m.defaultBackend === 'bridge'
-      ? `真实 bridge 模式 · ${m.platforms.length} 个平台 · 答题默认关`
-      : `离线模拟后端 · ${m.platforms.length} 个平台 · 进度为模拟值，独立核验会判 INCONCLUSIVE`;
-  }).catch(() => {});
+
+  /** 渲染当前会话面板，并按状态严格门控按钮（running/paused/awaiting_human/done 对照提案表） */
+  const render = (s) => {
+    if (!s || !s.sessionId || !alive()) return;
+    state.course.sid = s.sessionId;
+    lastSession = s;
+    q('#course-panel').style.display = '';
+    q('#course-mode').textContent = s.simulated ? '离线模拟 · 进度仅供演示' : '真实 bridge';
+    const st = s.status || 'running';
+    q('#course-status').textContent = (COURSE_STATUS_TEXT[st] || st) + (s.simulated ? '（离线模拟，进度仅供演示）' : '');
+    const p = s.progress || { current: 0, total: 0 };
+    q('#course-progress-text').textContent = `${p.current} / ${p.total}`;
+    q('#course-bar-fill').style.width = (p.total ? Math.round(p.current / p.total * 100) : 0) + '%';
+    const bar = q('#course-bar');
+    if (bar) { bar.setAttribute('aria-valuemax', String(p.total)); bar.setAttribute('aria-valuenow', String(p.current)); }
+    q('#course-tick').disabled = st !== 'running';
+    // pause 接口是 paused↔running 切换：running 显「暂停」，paused 显「恢复」；done/awaiting_human 一律禁用（后端对 done 会误切换）
+    const pause = q('#course-pause');
+    pause.disabled = st !== 'running' && st !== 'paused';
+    pause.textContent = st === 'paused' ? '恢复播放' : '暂停';
+    const resume = q('#course-resume');
+    resume.style.display = st === 'awaiting_human' ? '' : 'none';
+    resume.disabled = st !== 'awaiting_human';
+    q('#course-eval').disabled = false; // 四种状态均可独立核验
+  };
+
+  /** 请求期间禁用本面板全部动作控件，结束后按最新状态恢复门控（防重复提交）；
+   *  若面板已被替换，finally 不再触碰任何 DOM（按钮属于旧 detached 节点，无需恢复） */
+  const gateDuring = async (fn) => {
+    if (busy) return null;
+    busy = true;
+    ['#course-create', '#course-tick', '#course-pause', '#course-resume', '#course-eval'].forEach((id) => {
+      const b = q(id); if (b) b.disabled = true;
+    });
+    try {
+      return await fn();
+    } finally {
+      busy = false;
+      if (!alive()) return;
+      const c = q('#course-create');
+      if (c) c.disabled = false;
+      if (lastSession) render(lastSession); // 按最新状态恢复按钮门控
+    }
+  };
+
+  /** 最近会话列表：updatedAt 倒序取前 10；加载/空/错误各有明确提示；选中项高亮。
+   *  await 返回时若绑定已被替换：不在旧 DOM 写入；若当前存在新实例，转交它刷新列表，避免新面板读到旧数据 */
+  const loadSessions = async () => {
+    const box = q('#course-sessions');
+    try {
+      const list = await get('/api/course/sessions');
+      if (!alive()) {
+        if (gen !== state.courseGen && typeof state.course.refreshList === 'function') state.course.refreshList();
+        return;
+      }
+      const items = (Array.isArray(list) ? list : list.sessions || [])
+        .filter((x) => x.sessionId && x.status !== 'corrupt')
+        .sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')))
+        .slice(0, 10);
+      sessionCache = items;
+      if (!items.length) { if (box) box.innerHTML = '<div class="muted small">还没有刷课会话——填课程页地址创建一个，创建后可随时回来继续。</div>'; return; }
+      if (!box) return;
+      box.innerHTML = items.map((s) => {
+        const st = s.status || 'running';
+        const p = s.progress || { current: 0, total: 0 };
+        const selected = s.sessionId === state.course.sid;
+        return `<div class="course-session-row${selected ? ' selected' : ''}" data-sid="${esc(s.sessionId)}">
+          <div class="csi-main">
+            <span class="csi-platform">${esc(s.platform || '未知平台')}</span>
+            <span class="badge ${COURSE_STATUS_CLS[st] || ''}">${COURSE_STATUS_TEXT[st] || esc(st)}</span>
+            <span class="badge">${s.simulated ? '模拟' : 'bridge'}</span>
+          </div>
+          <div class="csi-meta muted small">${p.current}/${p.total} 章 · ${courseFmtTime(s.updatedAt)}${s.simulated ? ' · 离线模拟，进度仅供演示' : ''}</div>
+          <button class="btn ghost csi-open" data-sid="${esc(s.sessionId)}">${selected ? '当前会话' : '打开'}</button>
+        </div>`;
+      }).join('');
+      box.querySelectorAll('.csi-open').forEach((btn) => { btn.onclick = () => openSession(btn.dataset.sid); });
+    } catch (e) {
+      if (!alive()) {
+        // 旧绑定的列表请求失败时，也刷新当前实例；否则新面板可能保留动作完成前的旧列表。
+        if (gen !== state.courseGen && typeof state.course.refreshList === 'function') state.course.refreshList();
+        return; // 旧绑定的失败不再写入旧 DOM
+      }
+      sessionCache = [];
+      if (box) box.innerHTML = `<div class="warnbox">会话列表加载失败：${esc(e.message)}。可稍后重试，不影响手动创建。</div>`;
+    }
+  };
+  state.course.refreshList = loadSessions; // 当前实例的列表刷新入口（供被替换的旧绑定转交）
+
+  /** 从列表恢复会话：仅渲染该会话摘要，不自动推进/恢复任何动作 */
+  const openSession = (sid) => {
+    if (!alive()) return;
+    const s = sessionCache.find((x) => x.sessionId === sid);
+    if (!s) { setResult('<div class="warnbox">会话不在最近列表里，请刷新列表后再试。</div>'); return; }
+    render(s);
+    setResult(`<div class="muted small">已打开会话「${esc(s.platform || s.sessionId)}」，状态与进度为最近一次更新。</div>`);
+    const box = q('#course-sessions');
+    if (box) box.querySelectorAll('.course-session-row').forEach((row) => {
+      const sel = row.dataset.sid === state.course.sid;
+      row.classList.toggle('selected', sel);
+      const btn = row.querySelector('.csi-open');
+      if (btn) btn.textContent = sel ? '当前会话' : '打开';
+    });
+  };
+
+  // 动作统一走 busy 门禁 + 渲染 + 列表刷新；错误显式提示，不吞异常。
+  // 动作成功但面板已被替换时：只刷新列表（转交当前实例），不覆盖新面板。
+  const act = (path, body, okMsg) => gateDuring(async () => {
+    try {
+      const s = await post(path, body);
+      if (alive()) {
+        render(s);
+        if (okMsg) setResult(`<div class="muted small">${okMsg}</div>`);
+      }
+      loadSessions();
+    } catch (e) { setResult(`<div class="warnbox">${esc(e.message)}</div>`); }
+  });
+
   $('#course-create').onclick = async () => {
     const url = $('#course-url').value.trim();
     const total = Number($('#course-total').value) || 10;
     if (!url) { setResult('<div class="warnbox">请填写课程页地址</div>'); return; }
-    try { render(await post('/api/course/create', { url, total })); setResult('<div class="muted small">会话已创建，可推进章节。</div>'); }
-    catch (e) { setResult(`<div class="warnbox">${esc(e.message)}</div>`); }
+    await gateDuring(async () => {
+      try {
+        const s = await post('/api/course/create', { url, total });
+        if (alive()) {
+          render(s);
+          setResult('<div class="muted small">会话已创建，可推进章节。</div>');
+        }
+        loadSessions();
+      } catch (e) { setResult(`<div class="warnbox">${esc(e.message)}</div>`); }
+    });
   };
-  $('#course-tick').onclick = async () => {
-    if (!sid) return setResult('<div class="warnbox">请先创建会话</div>');
-    try { render(await post('/api/course/' + encodeURIComponent(sid) + '/tick', { steps: 1 })); }
-    catch (e) { setResult(`<div class="warnbox">${esc(e.message)}</div>`); }
-  };
-  $('#course-pause').onclick = async () => {
-    if (!sid) return;
-    try { render(await post('/api/course/' + encodeURIComponent(sid) + '/pause', {})); }
-    catch (e) { setResult(`<div class="warnbox">${esc(e.message)}</div>`); }
-  };
-  $('#course-resume').onclick = async () => {
-    if (!sid) return;
-    try { render(await post('/api/course/' + encodeURIComponent(sid) + '/resume', {})); }
-    catch (e) { setResult(`<div class="warnbox">${esc(e.message)}</div>`); }
-  };
+  $('#course-tick').onclick = () => { if (state.course.sid) act('/api/course/' + encodeURIComponent(state.course.sid) + '/tick', { steps: 1 }, '已推进一章。'); };
+  $('#course-pause').onclick = () => { if (state.course.sid) act('/api/course/' + encodeURIComponent(state.course.sid) + '/pause', {}, lastSession && lastSession.status === 'paused' ? '已恢复播放。' : '已暂停，可随时断点续播。'); };
+  $('#course-resume').onclick = () => { if (state.course.sid) act('/api/course/' + encodeURIComponent(state.course.sid) + '/resume', {}, '人工已处理验证码，已恢复播放。'); };
   $('#course-eval').onclick = async () => {
-    if (!sid) return setResult('<div class="warnbox">请先创建会话</div>');
-    try {
-      const v = await post('/api/course/' + encodeURIComponent(sid) + '/eval', {});
-      const badge = v.verdict === 'PASS' ? 'ok' : v.verdict === 'FAIL' ? 'err' : 'warn';
-      setResult(`<div class="note"><span class="badge ${badge}">${esc(v.verdict)}</span></div>` +
-        (v.failures || []).map((f) => `<div class="warnbox">${esc(f)}</div>`).join(''));
-    } catch (e) { setResult(`<div class="warnbox">${esc(e.message)}</div>`); }
+    if (!state.course.sid) { setResult('<div class="warnbox">请先创建或打开一个会话</div>'); return; }
+    await gateDuring(async () => {
+      try {
+        const v = await post('/api/course/' + encodeURIComponent(state.course.sid) + '/eval', {});
+        if (alive()) {
+          const badge = v.verdict === 'PASS' ? 'ok' : v.verdict === 'FAIL' ? 'err' : 'warn';
+          setResult(`<div class="note"><span class="badge ${badge}">${esc(v.verdict)}</span>${v.verdict === 'INCONCLUSIVE' ? '<span class="muted small"> 模拟后端的进度无法当作真实完成核验。</span>' : ''}</div>` +
+            (v.failures || []).map((f) => `<div class="warnbox">${esc(f)}</div>`).join(''));
+        }
+      } catch (e) { setResult(`<div class="warnbox">${esc(e.message)}</div>`); }
+    });
   };
+
+  get('/api/course/meta').then((m) => {
+    if (!alive()) return; // 异步返回时面板可能已被替换
+    const hint = q('#course-hint');
+    if (hint) hint.textContent = m.defaultBackend === 'bridge'
+      ? `真实 bridge 模式 · ${m.platforms.length} 个平台 · 答题默认关`
+      : `离线模拟后端 · ${m.platforms.length} 个平台 · 进度为模拟值，独立核验会判 INCONCLUSIVE`;
+  }).catch(() => {});
+  loadSessions().then(() => {
+    // 版块内重进：内存里记着的会话自动恢复渲染（页面刷新后 sid 清空，从列表手动打开）
+    const cached = sessionCache.find((x) => x.sessionId === state.course.sid);
+    if (cached) render(cached);
+  });
 }
 
 function renderWorkbench(s) {
@@ -626,6 +813,47 @@ function ttFreeHtml(v) {
     <div class="muted small" style="margin-top:8px">仅按课表计算，不含通勤、作业与自习安排；${slots.length > 8 ? `共 ${slots.length} 段，仅显示前 8 段。` : ''}</div>`;
 }
 
+/**
+ * 「给任务找时间」面板（纯前端）：从当前已加载的 TT.data.freeSlots 里筛出
+ * 连续节数达标的候选时段，最多 5 条，顺序沿用后端「日期 → 开始节次」的既有排序。
+ * 不调接口、不建事件、不替用户安排——候选只避开已录入课程。
+ */
+function ttFindHtml(v) {
+  const periodOpts = [2, 3, 4].map((n) => `<option value="${n}"${String(state.ttFind.periods) === String(n) ? ' selected' : ''}>${n} 节</option>`).join('');
+  return `
+    <div class="tt-find-form">
+      <label class="tt-field">事项名称<input id="tt-find-name" class="plan-input" type="text" maxlength="40" placeholder="如：写实验报告 / 复习高数" /></label>
+      <label class="tt-field">需要的连续空闲<select id="tt-find-periods" class="plan-input">${periodOpts}</select></label>
+      <button class="btn" id="tt-find-btn">查找时段</button>
+    </div>
+    <div id="tt-find-result" class="plan-result"><div class="muted small">输入事项与节数后点「查找时段」，从第 ${esc(v.week)} 周的空闲窗口里挑候选。</div></div>
+    <div class="muted small" style="margin-top:8px">建议仅避开已录入课程；考试、通勤等其他安排仍需自行判断。工具只列时段，不自动创建任务或日历事件。</div>`;
+}
+
+/** 渲染「给任务找时间」结果：日期 + 星期 + 节次 + 时间范围 + 连续节数；无匹配时说明原因，不伪造建议。 */
+function paintFindResult(v, results, matched, opts) {
+  const name = ((opts && opts.name) || String(state.ttFind.name || '').trim()) || '未命名事项';
+  const min = (opts && opts.min) || parseInt(state.ttFind.periods, 10) || 2;
+  if (!results.length) {
+    const all = v.freeSlots || [];
+    const maxLen = all.reduce((m, s) => Math.max(m, Number(s.periods) || 0), 0);
+    ttSetResult('#tt-find-result', `<div class="muted small">本周没有满足「连续 ≥${min} 节」的空闲窗口（本周共 ${all.length} 段空闲${maxLen ? `，最长 ${maxLen} 节` : ''}）。可以换个节数或翻到别的周再试。</div>`);
+    return;
+  }
+  const rows = results.map((s) => `<div class="tt-find-row">
+      <span class="d">${esc(s.date ? s.date.slice(5) : '—')}</span>
+      <span class="w">${esc(s.dayName)}</span>
+      <span class="p">第 ${s.startPeriod}-${s.endPeriod} 节</span>
+      <span class="t muted small">${esc(s.from)}-${esc(s.to)}</span>
+      <span class="badge">${s.periods} 节</span>
+    </div>`).join('');
+  const demoNote = v.demo ? '<div class="note">当前是示例课表：以下候选基于示例课程生成，仅供参考。</div>' : '';
+  const countText = matched > results.length ? `共 ${matched} 段满足，仅显示最前的 ${results.length} 段` : `共 ${matched} 段满足`;
+  ttSetResult('#tt-find-result', `${demoNote}
+    <div class="tt-find-head muted small">「${esc(name)}」· 第 ${esc(v.week)} 周 · 连续 ≥${min} 节 —— ${esc(countText)}：</div>
+    <div class="tt-free-list">${rows}</div>`);
+}
+
 function paintTimetable() {
   const v = TT.data;
   const box = $('#timetable-view');
@@ -682,6 +910,11 @@ function paintTimetable() {
           ${ttFreeHtml(v)}
         </section>
       </div>
+
+      <section class="wb-card" id="tt-find-card">
+        <h3>给任务找时间 <span class="badge">第 ${esc(v.week)} 周</span></h3>
+        ${ttFindHtml(v)}
+      </section>
 
       <section class="wb-card">
         <h3>添加课程</h3>
@@ -797,6 +1030,45 @@ function bindTimetable(v) {
     };
   }
   updateRemindUi();
+
+  // 「给任务找时间」：输入值留在内存 state 里，翻周后仍保留；结果只在同一周内复用
+  const findName = $('#tt-find-name');
+  const findPeriods = $('#tt-find-periods');
+  const findBtn = $('#tt-find-btn');
+  if (findName && findPeriods && findBtn) {
+    findName.value = state.ttFind.name;
+    findPeriods.value = String(state.ttFind.periods);
+    const weekMoved = state.ttFind.resultsWeek != null && Number(state.ttFind.resultsWeek) !== Number(v.week);
+    if (state.ttFind.results && !weekMoved) {
+      paintFindResult(v, state.ttFind.results, state.ttFind.matched);
+    } else if (weekMoved) {
+      ttSetResult('#tt-find-result', `<div class="muted small">已切到第 ${esc(v.week)} 周——上次结果属于第 ${esc(state.ttFind.resultsWeek)} 周，请重新「查找时段」。</div>`);
+    }
+    findName.oninput = () => { state.ttFind.name = findName.value; };
+    findPeriods.onchange = () => { state.ttFind.periods = findPeriods.value; };
+    findBtn.onclick = () => {
+      const name = findName.value.trim();
+      if (!name) {
+        ttSetResult('#tt-find-result', '<div class="warnbox">请先填写事项名称（只用于当前页面显示，不会写入课表）。</div>');
+        findName.focus();
+        return;
+      }
+      const min = parseInt(findPeriods.value, 10) || 2;
+      if (!v.term) {
+        ttSetResult('#tt-find-result', '<div class="warnbox">还没有设置学期，先在下方「学期设置」里配置开学日期与总周数。</div>');
+        return;
+      }
+      if (!v.stats || !v.stats.courses) {
+        ttSetResult('#tt-find-result', '<div class="warnbox">课表为空：先添加课程或载入示例课表，空闲窗口才有意义。</div>');
+        return;
+      }
+      const hits = (v.freeSlots || []).filter((s) => s.periods >= min); // 沿用后端「日期→开始节次」顺序，不重排
+      state.ttFind.results = hits.slice(0, 5);
+      state.ttFind.resultsWeek = v.week;
+      state.ttFind.matched = hits.length;
+      paintFindResult(v, state.ttFind.results, state.ttFind.matched, { name, min });
+    };
+  }
 
   const resetTtForm = () => {
     state.ttEditing = null;
@@ -1258,10 +1530,77 @@ async function drawerProfile(body) {
   };
 }
 async function drawerHealth(body) {
-  const h = await get('/api/health');
-  body.innerHTML = `<h2>运行时</h2><div class="d-card"><code>${esc(h.engine.runtime)}</code> · ${esc(h.engine.mode)} · <span class="badge ok">OK</span></div>
-    <h2>档案检查</h2><div class="d-card"><div>${esc(h.profile.verdict)}</div><div class="muted small">占位字段：${esc(h.profile.placeholders.join(', ') || '无')}</div></div>
-    <h2>版块状态</h2><div class="d-card">${h.sections.map((s) => `<div>${esc(s.name)} — ${esc(s.priority)}</div>`).join('')}</div>`;
+  const requestId = state.healthRequestId = (state.healthRequestId || 0) + 1;
+  const endpoints = [
+    ['health', '/api/health'], ['models', '/api/models'], ['decider', '/api/decider'],
+    ['course', '/api/course/meta'], ['homework', '/api/homework/meta'], ['project', '/api/project/meta'],
+  ];
+  const settled = await Promise.all(endpoints.map(async ([key, url]) => {
+    try { return [key, await get(url), true]; }
+    catch (_) { return [key, null, false]; }
+  }));
+  if (!body.isConnected || state.drawer !== 'health' || requestId !== state.healthRequestId) return;
+
+  const data = Object.fromEntries(settled.map(([key, value]) => [key, value]));
+  const failed = settled.filter(([, , ok]) => !ok).map(([key]) => key);
+  const card = (title, status, detail) => `<div class="d-card"><div class="csi-main"><strong>${esc(title)}</strong><span class="badge ${status.cls || ''}">${esc(status.label)}</span></div><div class="muted small" style="margin-top:6px">${detail}</div></div>`;
+  const unavailable = '接口暂不可读取';
+  const h = data.health;
+  const runtimeDetail = h?.engine
+    ? `${esc(h.engine.runtime)} · ${esc(h.engine.mode)}`
+    : unavailable;
+  const profileDetail = h?.profile
+    ? `${esc(h.profile.verdict)}<br><span class="muted small">占位字段：${esc(h.profile.placeholders?.join(', ') || '无')}</span>`
+    : unavailable;
+
+  const decider = data.decider;
+  const deciderStatus = !decider ? { label: '未知', cls: 'warn' }
+    : decider.backend === 'mock' ? { label: '模拟决策', cls: 'warn' }
+      : { label: `已选择 ${decider.backend || '未知后端'}`, cls: 'warn' };
+  const deciderDetail = !decider ? unavailable
+    : decider.backend === 'anyjev'
+      ? `已选择本地 AnyJev 后端；此面板不探测服务连通性，不能据此认定服务已就绪。模型：${esc(decider.model || '默认')}`
+      : `当前决策后端：${esc(decider.backend || '未知')}${decider.model ? ` · ${esc(decider.model)}` : ''}`;
+
+  const course = data.course;
+  const courseStatus = !course ? { label: '未知', cls: 'warn' }
+    : course.defaultBackend === 'bridge' ? { label: '已配置 Bridge', cls: 'warn' }
+      : { label: 'Mock 模拟', cls: 'warn' };
+  const courseDetail = !course ? unavailable
+    : course.defaultBackend === 'bridge'
+      ? `已配置 bridge 地址 ${esc(course.bridgeEndpoint || '未提供')}；不代表目标平台登录或真实进度已验证。`
+      : '离线模拟模式；进度仅供演示，不代表课程真实完成。';
+
+  const moduleStatus = (meta) => !meta ? { label: '未知', cls: 'warn' }
+    : (meta.backend === 'mock' || meta.simulated) ? { label: 'Mock 模拟', cls: 'warn' }
+      : { label: `已选择 ${meta.backend || '未说明后端'}`, cls: 'warn' };
+  const moduleDetail = (meta, nextStep) => !meta ? unavailable
+    : (meta.backend === 'mock' || meta.simulated)
+      ? `当前执行器为模拟流程；${esc(meta.boundary || nextStep)}`
+      : `后端已配置但连接与真实产物未验证；${esc(meta.boundary || nextStep)}`;
+  const homeworkDetail = moduleDetail(data.homework, '真实 Notebook 执行尚未接入。');
+  const projectDetail = moduleDetail(data.project, '真实检索、实验和编译尚未接入。');
+
+  const models = Array.isArray(data.models) ? data.models : [];
+  const modelBadges = models.length
+    ? models.map((m) => `<span class="badge ${m.id === 'mock' || m.keyReady ? 'ok' : 'warn'}" style="margin:3px">${esc(m.label || m.id || '模型')}：${m.id === 'mock' ? '离线可用' : m.keyReady ? 'Key 已配置' : 'Key 未配置'}</span>`).join('')
+    : unavailable;
+  const sections = Array.isArray(h?.sections)
+    ? h.sections.map((s) => `<div>${esc(s.name)} — ${esc(s.priority)}</div>`).join('')
+    : unavailable;
+
+  body.innerHTML = `<h2>运行时</h2>${card('工作台', h?.engine?.ok ? { label: '运行中', cls: 'ok' } : { label: '未知', cls: 'warn' }, runtimeDetail)}
+    <h2>模块就绪度</h2>
+    ${card('决策后端', deciderStatus, deciderDetail)}
+    ${card('刷课执行器', courseStatus, courseDetail)}
+    ${card('作业执行器', moduleStatus(data.homework), homeworkDetail)}
+    ${card('毕设 / 竞赛执行器', moduleStatus(data.project), projectDetail)}
+    <h2>模型配置</h2><div class="d-card"><div class="muted small">只显示环境变量是否配置，不读取或展示密钥内容。</div><div style="margin-top:8px">${modelBadges}</div></div>
+    <h2>档案检查</h2><div class="d-card">${profileDetail}</div>
+    <h2>版块状态</h2><div class="d-card">${sections}</div>
+    ${failed.length ? `<div class="warnbox" role="status" aria-live="polite">部分状态暂不可读取（${failed.length} 项）；其他状态仍已显示。<button class="btn ghost" id="health-retry" style="margin-left:8px">重试</button></div>` : '<div class="muted small" role="status" aria-live="polite">状态来自只读配置接口；未执行外部连接探测。</div>'}`;
+  const retry = body.querySelector('#health-retry');
+  if (retry) retry.onclick = () => drawerHealth(body);
 }
 
 // ---------- 初始化 ----------
@@ -1324,6 +1663,37 @@ async function boot() {
   $('#send').onclick = send;
   $('#input').onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } };
   $('#drawer-close').onclick = closeDrawer;
+  // 窄屏导航抽屉：菜单按钮开合、遮罩点击与 Escape 关闭；Tab 在侧栏可见交互项内循环
+  // （仅在 nav-open 且抽屉存在时拦截——桌面 nav-open 恒为 false，键盘行为不变）
+  const menuBtn = $('#mobile-menu');
+  if (menuBtn) {
+    menuBtn.onclick = () => {
+      if (document.body.classList.contains('nav-open')) closeMobileNav();
+      else setMobileNav(true);
+    };
+    $('#nav-mask').onclick = closeMobileNav;
+    document.addEventListener('keydown', (e) => {
+      if (!document.body.classList.contains('nav-open')) return;
+      if (e.key === 'Escape') { closeMobileNav(); return; }
+      if (e.key !== 'Tab') return;
+      const sidebar = $('#sidebar');
+      if (!sidebar || !sidebar.getClientRects().length) return;
+      const items = visibleFocusables(sidebar);
+      if (!items.length) return;
+      const first = items[0];
+      const last = items[items.length - 1];
+      const active = document.activeElement;
+      const inside = sidebar.contains(active);
+      if (e.shiftKey && (active === first || !inside)) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && (active === last || !inside)) { e.preventDefault(); first.focus(); }
+    });
+    // 窄窗放大回桌面时收起抽屉，防止残留 nav-open 把桌面键盘 Tab 困在侧栏里
+    const narrowMQ = window.matchMedia('(max-width: 760px)');
+    const onNarrowChange = (mq) => { if (!mq.matches) closeMobileNav(); };
+    if (narrowMQ.addEventListener) narrowMQ.addEventListener('change', onNarrowChange);
+    else if (narrowMQ.addListener) narrowMQ.addListener(onNarrowChange);
+  }
+  updateMobileSection();
   $$('.foot-btn').forEach((b) => b.onclick = () => openDrawer(b.dataset.drawer));
   window.addEventListener('hashchange', () => {
     const id = sectionFromHash();

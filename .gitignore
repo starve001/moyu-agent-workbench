@@ -20,3 +20,6 @@ node_modules/
 .venv/
 __pycache__/
 *.pyc
+
+# 刷课 bridge 的浏览器 profile（含平台登录态与 Cookie，绝不提交）
+tools_python/.profiles/

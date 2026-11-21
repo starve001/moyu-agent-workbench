@@ -307,7 +307,7 @@ function handleApi(req, res, url) {
 
   // ---------- 作业（P2）----------
   if (p === '/api/homework/meta' && method === 'GET') {
-    return send(res, 200, { steps: homework.STEPS, pipeline: 'jupyter-lab-report SOP', boundary: '不代写、不伪造数据；骨架生成需 U2 生成前询问，报告交付需生成后采用确认' });
+    return send(res, 200, { backend: 'mock', simulated: true, steps: homework.STEPS, pipeline: 'jupyter-lab-report SOP', boundary: '不代写、不伪造数据；骨架生成需 U2 生成前询问，报告交付需生成后采用确认' });
   }
   if (p === '/api/homework/sessions' && method === 'GET') return send(res, 200, homework.listSessions());
   if (p.startsWith('/api/homework/') && method === 'GET' && !p.endsWith('/sessions') && !p.endsWith('/meta')) {
@@ -345,7 +345,7 @@ function handleApi(req, res, url) {
 
   // ---------- 竞赛（P3）----------
   if (p === '/api/project/meta' && method === 'GET') {
-    return send(res, 200, { stages: project.STAGES, verdicts: project.VERDICTS, method: 'Claim/Obligation/Evidence + 独立审计（MIT 许可借鉴，自研实现）', boundary: '证据不足保持 INCONCLUSIVE；数字须冻结；引用须有来源' });
+    return send(res, 200, { backend: 'mock', simulated: true, stages: project.STAGES, verdicts: project.VERDICTS, method: 'Claim/Obligation/Evidence + 独立审计（MIT 许可借鉴，自研实现）', boundary: '证据不足保持 INCONCLUSIVE；数字须冻结；引用须有来源' });
   }
   if (p === '/api/project/sessions' && method === 'GET') return send(res, 200, project.listSessions());
   if (p.startsWith('/api/project/') && method === 'GET' && !p.endsWith('/sessions') && !p.endsWith('/meta')) {

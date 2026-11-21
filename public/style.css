@@ -100,6 +100,18 @@ body::before {
   overflow: hidden;
 }
 
+/* 窄屏工具栏与抽屉遮罩：桌面（>760px）不渲染；≤760px 布局见「窄屏整站响应式」块 */
+.mobile-bar { display: none; }
+.nav-mask {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 55;
+  background: rgba(4, 4, 8, .62);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+}
+
 /* ============================================================
    左侧栏
    ============================================================ */
@@ -730,6 +742,31 @@ ul.clean li::marker { color: var(--accent); }
   transition: width var(--t) var(--ease);
 }
 
+/* 刷课执行台：最近会话列表（恢复会话入口） */
+.course-sessions { display: flex; flex-direction: column; gap: 6px; }
+.course-session-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 11px;
+  border: 1px solid var(--line); border-radius: 10px;
+  background: rgba(255, 255, 255, .02);
+}
+.course-session-row.selected {
+  border-color: rgba(129, 140, 248, .45);
+  background: rgba(129, 140, 248, .07);
+}
+.csi-main { display: flex; align-items: center; gap: 7px; flex: 1; min-width: 0; flex-wrap: wrap; }
+.csi-platform {
+  font-weight: 600; font-size: 12.5px; color: var(--text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  max-width: 160px;
+}
+.csi-meta { flex: 0 0 auto; }
+.course-session-row .csi-open { flex: 0 0 auto; }
+@media (max-width: 720px) {
+  .course-session-row { flex-wrap: wrap; }
+  .csi-meta { order: 3; flex: 1 1 100%; }
+}
+
 .today-line {
   margin: 10px 14px 0;
   padding: 7px 10px;
@@ -907,6 +944,27 @@ ul.clean li::marker { color: var(--accent); }
 .tt-free-row .p { color: var(--text-2); flex: 1; }
 .tt-free-row .t { font-family: var(--mono); }
 
+/* 「给任务找时间」面板：输入行 + 候选行（与空闲窗口同一视觉语言） */
+.tt-find-form { display: flex; flex-wrap: wrap; gap: 10px 12px; align-items: flex-end; margin-bottom: 10px; }
+.tt-find-form .tt-field { flex: 1 1 220px; }
+.tt-find-form .btn { min-height: 38px; }
+.tt-find-head { margin: 6px 0; }
+.tt-find-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 9px;
+  border: 1px solid var(--line); border-radius: 9px;
+  background: rgba(255, 255, 255, .02);
+  font-size: 11.5px;
+}
+.tt-find-row .d { color: var(--accent); font-weight: 600; font-family: var(--mono); flex: 0 0 44px; }
+.tt-find-row .w { color: var(--text-2); font-weight: 600; flex: 0 0 38px; }
+.tt-find-row .p { color: var(--text-2); flex: 1; }
+.tt-find-row .t { font-family: var(--mono); }
+@media (max-width: 720px) {
+  .tt-find-form .tt-field { flex: 1 1 100%; }
+  .tt-find-form .btn { width: 100%; }
+}
+
 @media (max-width: 1100px) {
   .tt-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
@@ -932,6 +990,85 @@ ul.clean li::marker { color: var(--accent); }
 }
 .drawer.open { width: 420px; flex: 0 0 420px; border-left: 1px solid var(--line); }
 @media (max-width: 720px) { .drawer.open { width: 100%; flex-basis: 100%; } }
+
+/* ============================================================
+   窄屏整站响应式（≤760px）：侧栏转覆盖式抽屉 + 顶部工具栏。
+   仅此块内生效——桌面（>760px）布局、尺寸、层级完全不变。
+   ============================================================ */
+@media (max-width: 760px) {
+  .stage { flex-direction: column; }
+  .stage > main { flex: 1; min-height: 0; } /* 主视图占满剩余高度，保留各自内部滚动 */
+
+  /* 顶部工具栏：菜单开合抽屉 + 当前版块名 */
+  .mobile-bar {
+    display: flex;
+    flex: 0 0 50px;
+    height: 50px;
+    align-items: center;
+    gap: 10px;
+    padding: 0 12px;
+    border-bottom: 1px solid var(--line);
+    background: rgba(11, 11, 15, .72);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    position: relative;
+    z-index: 1;
+  }
+  .mobile-menu {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    min-height: 38px;
+    padding: 0 13px;
+    background: rgba(255, 255, 255, .04);
+    border: 1px solid var(--line);
+    color: var(--text-2);
+    border-radius: 9px;
+    font-size: 12.5px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .mobile-menu:hover { border-color: var(--line-strong); background: rgba(255, 255, 255, .07); color: var(--text); }
+  .mobile-section {
+    font-weight: 650; font-size: 13.5px; color: var(--text);
+    letter-spacing: -.15px;
+    min-width: 0;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+
+  /* 侧栏 → 覆盖式抽屉：导航/会话/底部工具入口原样保留 */
+  .sidebar {
+    position: fixed;
+    top: 0; bottom: 0; left: 0;
+    width: min(320px, 86vw);
+    flex: none;
+    z-index: 60;
+    transform: translateX(-103%);
+    visibility: hidden; /* 关闭时从键盘 Tab 序移除，防止焦点落入遮罩后 */
+  }
+  body.nav-open .sidebar { transform: none; visibility: visible; }
+  body.nav-open .nav-mask { display: block; }
+
+  /* 聊天顶栏：控件换行收纳；模型选择/模型ID/API地址一项不少、不被裁切 */
+  .chat-head { flex-wrap: wrap; height: auto; min-height: 58px; padding: 10px 14px; row-gap: 8px; }
+  .head-actions { flex-wrap: wrap; row-gap: 8px; }
+  #model-select { max-width: 100%; flex: 1 1 150px; }
+  .head-input { flex: 1 1 120px; width: auto; min-width: 0; }
+
+  /* 工作台：单列卡片、留白收紧、控制行可换行（触控目标不互相覆盖） */
+  .wb-scroll { padding: 18px 14px 40px; }
+  .wb-grid { grid-template-columns: 1fr; }
+  .plan-controls { flex-wrap: wrap; }
+  .plan-controls .plan-input { min-width: 0; }
+  .composer { padding: 10px 12px 8px; }
+  .composer-bar { flex-wrap: wrap; row-gap: 8px; }
+}
+
+/* 抽屉滑动过渡：仅对未开启「减少动态效果」的用户启用 */
+@media (max-width: 760px) and (prefers-reduced-motion: no-preference) {
+  .sidebar { transition: transform .22s var(--ease), visibility 0s linear .22s; }
+  body.nav-open .sidebar { transition: transform .22s var(--ease); }
+}
 .drawer-head {
   height: 58px;
   display: flex; align-items: center; justify-content: space-between;
